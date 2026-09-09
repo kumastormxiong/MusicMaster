@@ -1,8 +1,18 @@
 .idea
 .DS_Store
-__pycache__
+__pycache__/
+*.pyc
 desktop.ini
 
+# Python 虚拟环境与打包产物
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# 音频文件与临时缓存
 *.wav
 *.flac
 *.mp3
@@ -11,6 +21,15 @@ desktop.ini
 *.pkf
 *.mat
 *.mat5
+*.tmp
+*.tmp.wav
 
-*.pyc
+# 本地工作目录与测试目录
+output_mastered/
+test_temp*/
+
+# 本地私有配置
+config_settings.json
+
 mg_cli.py
+

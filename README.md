@@ -1,3 +1,30 @@
+# MusicMaster - 专业音频母带与格式转换工作台
+
+> 基于 **PyQt6** + **Matchering 2.0 匹配算法** + **Spotify Pedalboard (iZotope Ozone 12 VST3)** 打造的一站式桌面批量音频母带与格式转换工具。
+
+## 🌟 核心特性
+
+1. **三选项卡架构**：
+   - **🎚️ 选项卡 1：Matchering 目标参考母带**：基于高品质商业参考曲目，全自动对齐频响曲线 (FR)、有效电平 (RMS)、峰值动态与立体声场。
+   - **⚡ 选项卡 2：iZotope Ozone 12 (KS 预设) 音质增强**：6 级工业级原生 VST3 母带流水线（低频控制、动态均衡、清晰度增强、精细均衡、低频对焦、Maximizer IRC IV 智能最大化），在 96kHz 超高清精度下批量离线渲染，无需参考歌。
+   - **🎵 选项卡 3：原曲纯净直通**：零渲染损耗，不做任何音频电平与动态修改，仅做格式转换并完整继承源文件内嵌封面与元数据。
+2. **5 档精细输出响度微调**：
+   - 支持从 -6dB 至 0dB 自由调节，彻底解决过度压限与听觉疲劳问题。
+3. **丰富格式与严格 CBR 编码**：
+   - 默认推荐导出 **24-bit / 96 kHz FLAC** 高清母带；
+   - 新增支持 **320 kbps MP3** 与 **192 kbps MP3** 恒定码率压缩（自动兼容最高 48kHz 标准采样率）；
+   - 支持各类规格 WAV / FLAC 格式导出。
+4. **封面与元数据全自动继承**：
+   - 优先匹配同目录同名封面（如 `歌曲名.jpg`）；
+   - 深度支持源文件（FLAC / MP3 / M4A 等）**内嵌封面的无损提取与写入**；
+   - 自动保留与写入 ID3v2.3 / Vorbis 标准标签（标题、艺术家、专辑、年代、流派、音轨号等）。
+
+## 🚀 快速启动
+
+双击根目录下的 **`启动Matchering.bat`** 即可一键启动图形桌面界面。
+
+---
+
 [![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://t.me/tribute/app?startapp=de85)
 
 ![Matchering 2.0](https://raw.githubusercontent.com/sergree/matchering/master/images/logo.png)
