@@ -2568,7 +2568,7 @@ class MainWindow(QMainWindow):
         if fmt == "FLAC_24":
             fmt = DEFAULT_AUDIO_FORMAT
         if active_tab == 2:
-            idx = self.combo_format.findData("MP3_320")
+            idx = self.combo_format.findData("MP3_192")
         else:
             idx = self.combo_format.findData(fmt)
         if idx >= 0:
@@ -2676,8 +2676,8 @@ class MainWindow(QMainWindow):
             if current_fmt and current_fmt not in ("MP3_320", "MP3_192"):
                 self._saved_mastering_format = current_fmt
 
-            # 原曲直通模式下：输出格式自动选择 320k mp3
-            idx_mp3 = self.combo_format.findData("MP3_320")
+            # 原曲直通模式下：输出格式自动选择 192k mp3
+            idx_mp3 = self.combo_format.findData("MP3_192")
             if idx_mp3 >= 0:
                 self.combo_format.setCurrentIndex(idx_mp3)
 
