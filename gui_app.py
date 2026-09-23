@@ -960,8 +960,22 @@ class MasteringWorker(QThread):
 
             task_start_time = time.time()
             base_name, src_ext = os.path.splitext(target_name)
-            output_filename = f"{base_name}{self.filename_suffix}{ext}"
+
+            # 原曲直通模式下：默认保持与原文件同名，仅改变扩展名（如 .mp3）
+            # 若仍带有母带模式默认的 "_mastered" / "-Mastered"，在直通模式下自动去除
+            suffix = self.filename_suffix
+            if suffix in ("_mastered", "-Mastered"):
+                suffix = ""
+
+            output_filename = f"{base_name}{suffix}{ext}"
             output_filepath = os.path.join(self.output_dir, output_filename)
+
+            # 防覆盖保护：若输出目录与源文件相同且同扩展名，避免直接覆盖源文件
+            if os.path.abspath(output_filepath) == os.path.abspath(target_path):
+                output_filename = f"{base_name}_converted{ext}"
+                output_filepath = os.path.join(self.output_dir, output_filename)
+                self.log_emitted.emit("WARN", f"⚠️ 检测到输出路径与源文件相同，为避免覆盖原曲，已自动重命名为: {output_filename}")
+
 
             try:
                 # 1. 读取音频数据
@@ -2227,9 +2241,10 @@ class MainWindow(QMainWindow):
         for code, (_, _, _, name) in AUDIO_FORMATS.items():
             self.combo_format.addItem(name, code)
 
-        lbl_suf = QLabel("后缀:")
+        self.lbl_suf = QLabel("后缀:")
         self.txt_suffix = QLineEdit("_mastered")
         self.txt_suffix.setFixedWidth(100)
+        self.txt_suffix.setPlaceholderText("留空同名")
 
         row1.addWidget(lbl_dir)
         row1.addWidget(self.txt_output_dir, stretch=2)
@@ -2237,7 +2252,7 @@ class MainWindow(QMainWindow):
         row1.addWidget(self.btn_open_dir)
         row1.addWidget(lbl_fmt)
         row1.addWidget(self.combo_format)
-        row1.addWidget(lbl_suf)
+        row1.addWidget(self.lbl_suf)
         row1.addWidget(self.txt_suffix)
         meta_vbox.addLayout(row1)
 
@@ -2533,6 +2548,7 @@ class MainWindow(QMainWindow):
         cfg = self.cfg
         self.txt_output_dir.setText(cfg.get("output_dir", ""))
         self.txt_suffix.setText(cfg.get("filename_suffix", "_mastered"))
+        self._saved_mastering_suffix = self.txt_suffix.text().strip() or "_mastered"
         self.chk_limiter.setChecked(cfg.get("use_limiter", True))
         self.chk_embed_cover.setChecked(cfg.get("embed_cover", True))
 
@@ -2588,6 +2604,12 @@ class MainWindow(QMainWindow):
             # 选项卡 1: Matchering
             self._set_loudness_group_enabled(True)
             self.chk_limiter.setEnabled(True)
+            if hasattr(self, "lbl_suf"):
+                self.lbl_suf.setText("后缀:")
+            mastering_suf = getattr(self, "_saved_mastering_suffix", "_mastered") or "_mastered"
+            if not self.txt_suffix.text().strip():
+                self.txt_suffix.setText(mastering_suf)
+            self.txt_suffix.setPlaceholderText("_mastered")
             self.btn_start.setText("🚀 开始 Matchering 批量参考母带")
             self.btn_start.setStyleSheet("""
                 QPushButton {
@@ -2606,6 +2628,12 @@ class MainWindow(QMainWindow):
             # 选项卡 2: Ozone 12
             self._set_loudness_group_enabled(True)
             self.chk_limiter.setEnabled(True)
+            if hasattr(self, "lbl_suf"):
+                self.lbl_suf.setText("后缀:")
+            mastering_suf = getattr(self, "_saved_mastering_suffix", "_mastered") or "_mastered"
+            if not self.txt_suffix.text().strip():
+                self.txt_suffix.setText(mastering_suf)
+            self.txt_suffix.setPlaceholderText("_mastered")
             self.btn_start.setText("⚡ 开始 Ozone 12 (KS) 预设批量增强")
             self.btn_start.setStyleSheet("""
                 QPushButton {
@@ -2621,9 +2649,17 @@ class MainWindow(QMainWindow):
             """)
             self.lbl_progress_status.setText("就绪 (当前: Ozone 12 预设增强模式)")
         else:
-            # 选项卡 3: 原曲直通
+            # 选项卡 3: 原曲直通 (仅转换格式 / 不做任何修改)
             self._set_loudness_group_enabled(False)
             self.chk_limiter.setEnabled(False)
+            current_suf = self.txt_suffix.text().strip()
+            if current_suf:
+                self._saved_mastering_suffix = current_suf
+            # 原曲直通模式默认无后缀，保持与原曲同名（仅扩展名改变）
+            self.txt_suffix.setText("")
+            self.txt_suffix.setPlaceholderText("留空同名")
+            if hasattr(self, "lbl_suf"):
+                self.lbl_suf.setText("后缀 (可选):")
             self.btn_start.setText("🎵 开始原曲批量转换导出 (无损直通)")
             self.btn_start.setStyleSheet("""
                 QPushButton {
@@ -2659,7 +2695,10 @@ class MainWindow(QMainWindow):
         self.cfg["output_dir"] = self.txt_output_dir.text().strip()
         self.cfg["output_format"] = self.combo_format.currentData()
         self.cfg["loudness_level"] = self.loudness_btn_group.checkedId()
-        self.cfg["filename_suffix"] = self.txt_suffix.text().strip()
+        if self.tab_widget.currentIndex() == 2 and not self.txt_suffix.text().strip():
+            self.cfg["filename_suffix"] = getattr(self, "_saved_mastering_suffix", "_mastered")
+        else:
+            self.cfg["filename_suffix"] = self.txt_suffix.text().strip()
         self.cfg["use_limiter"] = self.chk_limiter.isChecked()
         self.cfg["embed_cover"] = self.chk_embed_cover.isChecked()
         self.cfg["ozone_preset_path"] = self.ozone_card.preset_xml
@@ -2889,6 +2928,8 @@ class MainWindow(QMainWindow):
         format_code = self.combo_format.currentData()
         loudness_db = self._get_current_loudness_db()
         suffix = self.txt_suffix.text().strip()
+        if engine_mode == "passthrough" and suffix in ("_mastered", "-Mastered"):
+            suffix = ""
         use_limiter = self.chk_limiter.isChecked()
         embed_cover = self.chk_embed_cover.isChecked()
 
