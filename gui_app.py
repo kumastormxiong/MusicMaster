@@ -2240,6 +2240,7 @@ class MainWindow(QMainWindow):
         self.combo_format = QComboBox()
         for code, (_, _, _, name) in AUDIO_FORMATS.items():
             self.combo_format.addItem(name, code)
+        self._saved_mastering_format = DEFAULT_AUDIO_FORMAT
 
         self.lbl_suf = QLabel("后缀:")
         self.txt_suffix = QLineEdit("_mastered")
@@ -2552,16 +2553,24 @@ class MainWindow(QMainWindow):
         self.chk_limiter.setChecked(cfg.get("use_limiter", True))
         self.chk_embed_cover.setChecked(cfg.get("embed_cover", True))
 
+        # 母带输出格式记忆（若保存的是MP3，母带默认使用 24-bit 96kHz FLAC）
+        mastering_fmt = cfg.get("mastering_output_format", cfg.get("output_format", DEFAULT_AUDIO_FORMAT))
+        if mastering_fmt == "FLAC_24" or mastering_fmt in ("MP3_320", "MP3_192"):
+            mastering_fmt = DEFAULT_AUDIO_FORMAT
+        self._saved_mastering_format = mastering_fmt
+
         # 选项卡恢复
         active_tab = cfg.get("active_tab", 0)
         self.tab_widget.setCurrentIndex(active_tab)
-        self._on_tab_changed(active_tab)
 
-        # 输出格式
+        # 输出格式恢复
         fmt = cfg.get("output_format", DEFAULT_AUDIO_FORMAT)
         if fmt == "FLAC_24":
             fmt = DEFAULT_AUDIO_FORMAT
-        idx = self.combo_format.findData(fmt)
+        if active_tab == 2:
+            idx = self.combo_format.findData("MP3_320")
+        else:
+            idx = self.combo_format.findData(fmt)
         if idx >= 0:
             self.combo_format.setCurrentIndex(idx)
         else:
@@ -2600,8 +2609,8 @@ class MainWindow(QMainWindow):
             btn.setEnabled(enabled)
 
     def _on_tab_changed(self, idx: int):
-        if idx == 0:
-            # 选项卡 1: Matchering
+        if idx in (0, 1):
+            # 选项卡 1: Matchering / 选项卡 2: Ozone 12
             self._set_loudness_group_enabled(True)
             self.chk_limiter.setEnabled(True)
             if hasattr(self, "lbl_suf"):
@@ -2610,44 +2619,45 @@ class MainWindow(QMainWindow):
             if not self.txt_suffix.text().strip():
                 self.txt_suffix.setText(mastering_suf)
             self.txt_suffix.setPlaceholderText("_mastered")
-            self.btn_start.setText("🚀 开始 Matchering 批量参考母带")
-            self.btn_start.setStyleSheet("""
-                QPushButton {
-                    background-color: #10b981;
-                    color: white;
-                    font-size: 14px;
-                    font-weight: bold;
-                    border-radius: 7px;
-                    padding: 0 28px;
-                }
-                QPushButton:hover { background-color: #059669; }
-                QPushButton:disabled { background-color: #374151; color: #6b7280; }
-            """)
-            self.lbl_progress_status.setText("就绪 (当前: Matchering 参考母带模式)")
-        elif idx == 1:
-            # 选项卡 2: Ozone 12
-            self._set_loudness_group_enabled(True)
-            self.chk_limiter.setEnabled(True)
-            if hasattr(self, "lbl_suf"):
-                self.lbl_suf.setText("后缀:")
-            mastering_suf = getattr(self, "_saved_mastering_suffix", "_mastered") or "_mastered"
-            if not self.txt_suffix.text().strip():
-                self.txt_suffix.setText(mastering_suf)
-            self.txt_suffix.setPlaceholderText("_mastered")
-            self.btn_start.setText("⚡ 开始 Ozone 12 (KS) 预设批量增强")
-            self.btn_start.setStyleSheet("""
-                QPushButton {
-                    background-color: #0284c7;
-                    color: white;
-                    font-size: 14px;
-                    font-weight: bold;
-                    border-radius: 7px;
-                    padding: 0 28px;
-                }
-                QPushButton:hover { background-color: #0369a1; }
-                QPushButton:disabled { background-color: #374151; color: #6b7280; }
-            """)
-            self.lbl_progress_status.setText("就绪 (当前: Ozone 12 预设增强模式)")
+
+            # 若先前在原曲直通模式下自动选为 MP3，切回母带模式时自动切回母带格式（默认 24-bit / 96 kHz FLAC）
+            current_fmt = self.combo_format.currentData()
+            if current_fmt in ("MP3_320", "MP3_192"):
+                mastering_fmt = getattr(self, "_saved_mastering_format", DEFAULT_AUDIO_FORMAT) or DEFAULT_AUDIO_FORMAT
+                idx_fmt = self.combo_format.findData(mastering_fmt)
+                if idx_fmt >= 0:
+                    self.combo_format.setCurrentIndex(idx_fmt)
+
+            if idx == 0:
+                self.btn_start.setText("🚀 开始 Matchering 批量参考母带")
+                self.btn_start.setStyleSheet("""
+                    QPushButton {
+                        background-color: #10b981;
+                        color: white;
+                        font-size: 14px;
+                        font-weight: bold;
+                        border-radius: 7px;
+                        padding: 0 28px;
+                    }
+                    QPushButton:hover { background-color: #059669; }
+                    QPushButton:disabled { background-color: #374151; color: #6b7280; }
+                """)
+                self.lbl_progress_status.setText("就绪 (当前: Matchering 参考母带模式)")
+            else:
+                self.btn_start.setText("⚡ 开始 Ozone 12 (KS) 预设批量增强")
+                self.btn_start.setStyleSheet("""
+                    QPushButton {
+                        background-color: #0284c7;
+                        color: white;
+                        font-size: 14px;
+                        font-weight: bold;
+                        border-radius: 7px;
+                        padding: 0 28px;
+                    }
+                    QPushButton:hover { background-color: #0369a1; }
+                    QPushButton:disabled { background-color: #374151; color: #6b7280; }
+                """)
+                self.lbl_progress_status.setText("就绪 (当前: Ozone 12 预设增强模式)")
         else:
             # 选项卡 3: 原曲直通 (仅转换格式 / 不做任何修改)
             self._set_loudness_group_enabled(False)
@@ -2660,6 +2670,17 @@ class MainWindow(QMainWindow):
             self.txt_suffix.setPlaceholderText("留空同名")
             if hasattr(self, "lbl_suf"):
                 self.lbl_suf.setText("后缀 (可选):")
+
+            # 暂存先前的母带输出格式（若当前非 MP3）
+            current_fmt = self.combo_format.currentData()
+            if current_fmt and current_fmt not in ("MP3_320", "MP3_192"):
+                self._saved_mastering_format = current_fmt
+
+            # 原曲直通模式下：输出格式自动选择 320k mp3
+            idx_mp3 = self.combo_format.findData("MP3_320")
+            if idx_mp3 >= 0:
+                self.combo_format.setCurrentIndex(idx_mp3)
+
             self.btn_start.setText("🎵 开始原曲批量转换导出 (无损直通)")
             self.btn_start.setStyleSheet("""
                 QPushButton {
@@ -2694,6 +2715,8 @@ class MainWindow(QMainWindow):
         self.cfg["active_tab"] = self.tab_widget.currentIndex()
         self.cfg["output_dir"] = self.txt_output_dir.text().strip()
         self.cfg["output_format"] = self.combo_format.currentData()
+        if hasattr(self, "_saved_mastering_format"):
+            self.cfg["mastering_output_format"] = self._saved_mastering_format
         self.cfg["loudness_level"] = self.loudness_btn_group.checkedId()
         if self.tab_widget.currentIndex() == 2 and not self.txt_suffix.text().strip():
             self.cfg["filename_suffix"] = getattr(self, "_saved_mastering_suffix", "_mastered")
