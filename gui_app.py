@@ -61,7 +61,48 @@ from matchering.results import Result
 
 CONFIG_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), "config_settings.json"))
 OZONE_VST3_DIR_DEFAULT = r"C:\Program Files\Common Files\VST3\iZotope"
-OZONE_KS_XML_DEFAULT = os.path.expanduser(r"~\Documents\iZotope\Ozone\User Presets\Global Presets\KS.xml")
+OZONE_GLOBAL_PRESETS_DIR = os.path.expanduser(r"~\Documents\iZotope\Ozone\User Presets\Global Presets")
+OZONE_KSNEW_XML_DEFAULT = os.path.join(OZONE_GLOBAL_PRESETS_DIR, "KSNEW.xml")
+OZONE_KS_XML_DEFAULT = os.path.join(OZONE_GLOBAL_PRESETS_DIR, "KS.xml")
+
+
+def get_default_ozone_preset_path(preset_dir: str = OZONE_GLOBAL_PRESETS_DIR) -> str:
+    """获取默认 Ozone 预设路径，优先选择 KSNEW.xml，其次 KS.xml，再次首个 XML 文件"""
+    if os.path.isdir(preset_dir):
+        try:
+            for f in os.listdir(preset_dir):
+                if f.lower() == "ksnew.xml":
+                    return os.path.join(preset_dir, f)
+            for f in os.listdir(preset_dir):
+                if f.lower() == "ks.xml":
+                    return os.path.join(preset_dir, f)
+            for f in os.listdir(preset_dir):
+                if f.lower().endswith(".xml") and "ksnew" in f.lower():
+                    return os.path.join(preset_dir, f)
+            for f in sorted(os.listdir(preset_dir), key=lambda s: s.lower()):
+                if f.lower().endswith(".xml"):
+                    return os.path.join(preset_dir, f)
+        except Exception:
+            pass
+    return OZONE_KSNEW_XML_DEFAULT if os.path.exists(OZONE_KSNEW_XML_DEFAULT) else OZONE_KS_XML_DEFAULT
+
+
+def get_ozone_available_presets(preset_dir: str = OZONE_GLOBAL_PRESETS_DIR) -> list[tuple[str, str]]:
+    """
+    扫描预设目录中的所有 XML 预设文件。
+    返回: [(preset_name, full_xml_path), ...]
+    """
+    results = []
+    if not preset_dir or not os.path.isdir(preset_dir):
+        return results
+    try:
+        for entry in sorted(os.listdir(preset_dir), key=lambda s: s.lower()):
+            if entry.lower().endswith(".xml"):
+                stem, _ = os.path.splitext(entry)
+                results.append((stem, os.path.join(preset_dir, entry)))
+    except Exception:
+        pass
+    return results
 
 SUPPORTED_EXTENSIONS = {
     ".wav", ".mp3", ".flac", ".ogg", ".aiff", ".aif", ".m4a", ".aac", ".wma"
@@ -483,7 +524,8 @@ def load_config() -> dict:
         "output_dir": os.path.abspath(os.path.join(os.getcwd(), "output_mastered")),
         "embed_cover": True,
         "ozone_vst_dir": OZONE_VST3_DIR_DEFAULT,
-        "ozone_preset_path": OZONE_KS_XML_DEFAULT,
+        "ozone_preset_dir": OZONE_GLOBAL_PRESETS_DIR,
+        "ozone_preset_path": get_default_ozone_preset_path(),
         "metadata": {
             "artist": "",
             "year": "",
@@ -500,6 +542,12 @@ def load_config() -> dict:
                     default_config["metadata"].update(saved["metadata"])
                 if default_config.get("output_format") == "FLAC_24":
                     default_config["output_format"] = DEFAULT_AUDIO_FORMAT
+                # 若旧预设为 KS.xml 或不存在，且目录下有 KSNEW.xml，则默认选择 KSNEW
+                old_preset = default_config.get("ozone_preset_path", "")
+                if not old_preset or not os.path.exists(old_preset) or os.path.basename(old_preset).lower() == "ks.xml":
+                    ksnew_candidate = get_default_ozone_preset_path(default_config.get("ozone_preset_dir", OZONE_GLOBAL_PRESETS_DIR))
+                    if os.path.exists(ksnew_candidate):
+                        default_config["ozone_preset_path"] = ksnew_candidate
         except Exception as e:
             print("读取配置文件失败，使用默认配置:", e)
     return default_config
@@ -887,7 +935,7 @@ class MasteringWorker(QThread):
         target_tasks: list,
         output_dir: str,
         reference_path: str = "",
-        ozone_preset_path: str = OZONE_KS_XML_DEFAULT,
+        ozone_preset_path: str = "",
         ozone_vst_dir: str = OZONE_VST3_DIR_DEFAULT,
         format_code: str = DEFAULT_AUDIO_FORMAT,
         loudness_db: float = -3.0,
@@ -905,7 +953,7 @@ class MasteringWorker(QThread):
         self.target_tasks = target_tasks
         self.output_dir = output_dir
         self.reference_path = reference_path
-        self.ozone_preset_path = ozone_preset_path
+        self.ozone_preset_path = ozone_preset_path or get_default_ozone_preset_path()
         self.ozone_vst_dir = ozone_vst_dir
         self.format_code = format_code
         self.loudness_db = loudness_db
@@ -1483,11 +1531,12 @@ class OzoneSettingsDialog(QDialog):
         self.resize(860, 680)
         self.setMinimumSize(780, 520)
 
-        self.preset_xml = preset_xml or OZONE_KS_XML_DEFAULT
+        self.preset_xml = preset_xml or get_default_ozone_preset_path()
         self.vst_dir = vst_dir or OZONE_VST3_DIR_DEFAULT
         self.saved = False
 
         self._init_ui()
+        self._populate_dialog_presets()
         self._refresh_data()
 
     def _init_ui(self):
@@ -1577,6 +1626,23 @@ class OzoneSettingsDialog(QDialog):
         path_layout = QVBoxLayout(group_path)
         path_layout.setSpacing(8)
 
+        # 预设快速选择行
+        row_preset = QHBoxLayout()
+        lbl_p = QLabel("全局预设选择:")
+        lbl_p.setFixedWidth(110)
+        lbl_p.setStyleSheet("font-weight: 500; color: #cbd5e1;")
+        self.combo_dialog_presets = QComboBox()
+        self.combo_dialog_presets.currentIndexChanged.connect(self._on_dialog_preset_combo_changed)
+        btn_refresh_p = QPushButton("🔄 刷新预设列表")
+        btn_refresh_p.clicked.connect(self._populate_dialog_presets)
+        btn_open_folder = QPushButton("📂 打开预设目录")
+        btn_open_folder.clicked.connect(self._on_open_dialog_preset_dir)
+        row_preset.addWidget(lbl_p)
+        row_preset.addWidget(self.combo_dialog_presets, stretch=1)
+        row_preset.addWidget(btn_refresh_p)
+        row_preset.addWidget(btn_open_folder)
+        path_layout.addLayout(row_preset)
+
         # XML 预设行
         row_xml = QHBoxLayout()
         lbl_xml = QLabel("预设文件 (XML):")
@@ -1587,8 +1653,8 @@ class OzoneSettingsDialog(QDialog):
         btn_browse_xml.clicked.connect(self._on_browse_xml)
         btn_reload_xml = QPushButton("🔄 重新解析")
         btn_reload_xml.clicked.connect(self._refresh_data)
-        btn_reset_ks = QPushButton("↺ 恢复 KS 预设")
-        btn_reset_ks.clicked.connect(self._on_reset_ks)
+        btn_reset_ks = QPushButton("↺ 默认 (KSNEW)")
+        btn_reset_ks.clicked.connect(self._on_reset_ksnew)
 
         row_xml.addWidget(lbl_xml)
         row_xml.addWidget(self.txt_xml, stretch=1)
@@ -1669,16 +1735,57 @@ class OzoneSettingsDialog(QDialog):
         bottom_bar.addWidget(self.btn_cancel)
         main_layout.addLayout(bottom_bar)
 
+    def _populate_dialog_presets(self):
+        curr_path = self.txt_xml.text().strip()
+        curr_dir = os.path.dirname(curr_path) if curr_path and os.path.exists(curr_path) else OZONE_GLOBAL_PRESETS_DIR
+        if not os.path.isdir(curr_dir):
+            curr_dir = OZONE_GLOBAL_PRESETS_DIR
+        presets = get_ozone_available_presets(curr_dir)
+
+        self.combo_dialog_presets.blockSignals(True)
+        self.combo_dialog_presets.clear()
+        target = self.txt_xml.text().strip()
+        sel_idx = -1
+        ksnew_idx = -1
+        for idx, (name, path) in enumerate(presets):
+            self.combo_dialog_presets.addItem(f"⭐ {name} (推荐默认)" if name.upper() == "KSNEW" else (f"⭐ {name}" if name.upper() == "KS" else f"🎛️ {name}"), path)
+            if target and os.path.abspath(path) == os.path.abspath(target):
+                sel_idx = idx
+            if name.upper() == "KSNEW":
+                ksnew_idx = idx
+
+        if sel_idx != -1:
+            self.combo_dialog_presets.setCurrentIndex(sel_idx)
+        elif ksnew_idx != -1:
+            self.combo_dialog_presets.setCurrentIndex(ksnew_idx)
+        self.combo_dialog_presets.blockSignals(False)
+
+    def _on_dialog_preset_combo_changed(self, idx: int):
+        if idx < 0: return
+        path = self.combo_dialog_presets.itemData(idx)
+        if path and path != self.txt_xml.text().strip():
+            self.txt_xml.setText(path)
+            self._refresh_data()
+
+    def _on_open_dialog_preset_dir(self):
+        curr = os.path.dirname(self.txt_xml.text().strip()) if self.txt_xml.text().strip() else OZONE_GLOBAL_PRESETS_DIR
+        if os.path.exists(curr):
+            os.startfile(curr)
+        elif os.path.exists(OZONE_GLOBAL_PRESETS_DIR):
+            os.startfile(OZONE_GLOBAL_PRESETS_DIR)
+
     def _on_browse_xml(self):
         curr = self.txt_xml.text().strip()
         init_dir = os.path.dirname(curr) if os.path.exists(curr) else os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(self, "选择 Ozone 预设文件 (XML)", init_dir, "Ozone 预设 (*.xml);;所有文件 (*.*)")
         if path:
             self.txt_xml.setText(path)
+            self._populate_dialog_presets()
             self._refresh_data()
 
-    def _on_reset_ks(self):
-        self.txt_xml.setText(OZONE_KS_XML_DEFAULT)
+    def _on_reset_ksnew(self):
+        self.txt_xml.setText(get_default_ozone_preset_path())
+        self._populate_dialog_presets()
         self._refresh_data()
 
     def _on_browse_vst(self):
@@ -1844,89 +1951,108 @@ class OzoneSettingsDialog(QDialog):
 
 
 # ==============================================================================
-# 选项卡 2：iZotope Ozone 12 KS 预设卡片 (主界面上清新整洁、不拥挤)
+# 选项卡 2：iZotope Ozone 12 预设增强卡片 (自动读取预设目录、手动选择预设、默认 KSNEW)
 # ==============================================================================
 class OzoneTabWidget(QFrame):
     preset_updated = pyqtSignal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, preset_dir="", preset_xml="", vst_dir=""):
         super().__init__(parent)
         self.setObjectName("OzoneCard")
-        self.vst_dir = OZONE_VST3_DIR_DEFAULT
-        self.preset_xml = OZONE_KS_XML_DEFAULT
+        self.preset_dir = preset_dir or OZONE_GLOBAL_PRESETS_DIR
+        self.vst_dir = vst_dir or OZONE_VST3_DIR_DEFAULT
+        self.preset_xml = preset_xml or get_default_ozone_preset_path(self.preset_dir)
 
         self.setStyleSheet("""
             QFrame#OzoneCard {
                 background-color: #202129;
                 border: 1px solid #323544;
                 border-radius: 8px;
-                padding: 12px 16px;
+                padding: 10px 14px;
             }
             QFrame#OzoneCard:hover {
                 border-color: #38bdf8;
             }
+            QComboBox {
+                background-color: #1e1e24;
+                border: 1px solid #38bdf8;
+                border-radius: 6px;
+                padding: 3px 10px;
+                color: #f1f5f9;
+                font-weight: 500;
+                font-size: 12px;
+                min-width: 170px;
+            }
+            QComboBox:hover {
+                background-color: #27272a;
+                border-color: #7dd3fc;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #18181b;
+                color: #f4f4f5;
+                selection-background-color: #0284c7;
+                selection-color: #ffffff;
+                border: 1px solid #3f3f46;
+                padding: 4px;
+            }
         """)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(18, 12, 18, 12)
-        layout.setSpacing(18)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.setSpacing(14)
 
         # 左侧大图标
         self.icon_label = QLabel("⚡")
         self.icon_label.setStyleSheet("font-size: 34px; color: #38bdf8;")
         layout.addWidget(self.icon_label)
 
-        # 中间标题与状态说明
+        # 中间标题与控制区
         info_col = QVBoxLayout()
         info_col.setSpacing(4)
 
-        self.lbl_title = QLabel("iZotope Ozone 12 工业母带增强链 (KS 专属预设)")
-        self.lbl_title.setStyleSheet("font-size: 14px; font-weight: bold; color: #38bdf8;")
+        # 1. 标题栏与特性徽章
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        self.lbl_title = QLabel("iZotope Ozone 12 工业母带增强链")
+        self.lbl_title.setStyleSheet("font-size: 13px; font-weight: bold; color: #38bdf8;")
+        self.lbl_badge = QLabel("● 原生 64-bit 离线高速渲染 | 免参考歌")
+        self.lbl_badge.setStyleSheet("font-size: 11px; color: #7dd3fc; font-weight: 500;")
+        title_row.addWidget(self.lbl_title)
+        title_row.addWidget(self.lbl_badge)
+        title_row.addStretch(1)
+        info_col.addLayout(title_row)
 
-        self.lbl_status = QLabel("● 预设就绪: KS.xml | 6 大原生母带模块已配置 (64-bit 离线高速渲染，无需参考歌)")
-        self.lbl_status.setStyleSheet("font-size: 12px; color: #e2e8f0; font-weight: 500;")
+        # 2. 预设选择行 (自动读取目录、手动下拉选择、默认 KSNEW)
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(8)
 
-        self.lbl_preset_path = QLabel("")
-        self.lbl_preset_path.setStyleSheet("font-size: 11px; color: #94a3b8;")
+        lbl_select = QLabel("预设选择:")
+        lbl_select.setStyleSheet("font-size: 12px; font-weight: bold; color: #e2e8f0;")
 
-        info_col.addWidget(self.lbl_title)
-        info_col.addWidget(self.lbl_status)
-        info_col.addWidget(self.lbl_preset_path)
-        layout.addLayout(info_col, stretch=1)
+        self.combo_presets = QComboBox()
+        self.combo_presets.setFixedHeight(28)
+        self.combo_presets.currentIndexChanged.connect(self._on_preset_combo_changed)
 
-        # 右侧操作按钮区
-        btn_col = QVBoxLayout()
-        btn_col.setSpacing(6)
-
-        # 主按钮：打开完整设置对话框
-        self.btn_open_settings = QPushButton("⚙️ 打开 Ozone 12 母带链设置与参数详情...")
-        self.btn_open_settings.setFixedHeight(38)
-        self.btn_open_settings.setStyleSheet("""
+        self.btn_refresh = QPushButton("🔄 刷新")
+        self.btn_refresh.setFixedHeight(28)
+        self.btn_refresh.setToolTip(f"重新扫描全局预设目录:\n{self.preset_dir}")
+        self.btn_refresh.setStyleSheet("""
             QPushButton {
-                background-color: #0284c7;
-                color: #ffffff;
-                font-size: 12px;
-                font-weight: bold;
-                padding: 0 16px;
-                border: 1px solid #38bdf8;
-                border-radius: 6px;
+                background-color: #27272a;
+                color: #38bdf8;
+                border: 1px solid #0284c7;
+                padding: 0 10px;
+                border-radius: 5px;
+                font-size: 11px;
+                font-weight: 500;
             }
-            QPushButton:hover {
-                background-color: #0369a1;
-                border-color: #7dd3fc;
-            }
-            QPushButton:pressed {
-                background-color: #075985;
-            }
+            QPushButton:hover { background-color: #0369a1; color: white; }
         """)
-        self.btn_open_settings.clicked.connect(self._on_open_settings_clicked)
+        self.btn_refresh.clicked.connect(self._on_refresh_clicked)
 
-        # 次要按钮：快捷切换与重新解析
-        sub_btn_row = QHBoxLayout()
-        sub_btn_row.setSpacing(6)
-
-        self.btn_choose_xml = QPushButton("📁 切换预设...")
+        self.btn_choose_xml = QPushButton("📁 浏览文件...")
         self.btn_choose_xml.setFixedHeight(28)
+        self.btn_choose_xml.setToolTip("选择外部 XML 预设文件")
         self.btn_choose_xml.setStyleSheet("""
             QPushButton {
                 background-color: #27272a;
@@ -1940,62 +2066,197 @@ class OzoneTabWidget(QFrame):
         """)
         self.btn_choose_xml.clicked.connect(self._on_choose_xml_clicked)
 
-        self.btn_reload = QPushButton("🔄 重新解析")
-        self.btn_reload.setFixedHeight(28)
-        self.btn_reload.setStyleSheet("""
+        self.btn_open_dir = QPushButton("📂 打开预设目录")
+        self.btn_open_dir.setFixedHeight(28)
+        self.btn_open_dir.setToolTip(f"在文件资源管理器中打开:\n{self.preset_dir}")
+        self.btn_open_dir.setStyleSheet("""
             QPushButton {
                 background-color: #27272a;
-                color: #38bdf8;
-                border: 1px solid #0284c7;
+                color: #94a3b8;
+                border: 1px solid #3f3f46;
                 padding: 0 10px;
                 border-radius: 5px;
                 font-size: 11px;
             }
-            QPushButton:hover { background-color: #0369a1; color: white; }
+            QPushButton:hover { background-color: #334155; color: #f1f5f9; border-color: #64748b; }
         """)
-        self.btn_reload.clicked.connect(self._refresh_status)
+        self.btn_open_dir.clicked.connect(self._on_open_dir_clicked)
 
-        sub_btn_row.addWidget(self.btn_choose_xml)
-        sub_btn_row.addWidget(self.btn_reload)
+        preset_row.addWidget(lbl_select)
+        preset_row.addWidget(self.combo_presets, stretch=1)
+        preset_row.addWidget(self.btn_refresh)
+        preset_row.addWidget(self.btn_choose_xml)
+        preset_row.addWidget(self.btn_open_dir)
+        info_col.addLayout(preset_row)
 
+        # 3. 模块激活状态
+        self.lbl_status = QLabel("")
+        self.lbl_status.setStyleSheet("font-size: 11px; color: #38bdf8; font-weight: 500;")
+        info_col.addWidget(self.lbl_status)
+
+        # 4. 预设完整物理路径
+        self.lbl_preset_path = QLabel("")
+        self.lbl_preset_path.setStyleSheet("font-size: 10px; color: #94a3b8;")
+        info_col.addWidget(self.lbl_preset_path)
+
+        layout.addLayout(info_col, stretch=1)
+
+        # 右侧操作按钮区
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(6)
+        btn_col.addStretch(1)
+
+        self.btn_open_settings = QPushButton("⚙️ 打开 Ozone 12 母带链设置与参数详情...")
+        self.btn_open_settings.setFixedHeight(38)
+        self.btn_open_settings.setStyleSheet("""
+            QPushButton {
+                background-color: #0284c7;
+                color: #ffffff;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 0 14px;
+                border: 1px solid #38bdf8;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background-color: #0369a1;
+                border-color: #7dd3fc;
+            }
+            QPushButton:pressed {
+                background-color: #075985;
+            }
+        """)
+        self.btn_open_settings.clicked.connect(self._on_open_settings_clicked)
         btn_col.addWidget(self.btn_open_settings)
-        btn_col.addLayout(sub_btn_row)
+        btn_col.addStretch(1)
+
         layout.addLayout(btn_col)
 
+        # 初始载入预设列表（默认匹配 KSNEW）
+        self._load_presets_from_dir(self.preset_xml)
+
+    def _load_presets_from_dir(self, target_preset: str = ""):
+        self.combo_presets.blockSignals(True)
+        self.combo_presets.clear()
+
+        presets = get_ozone_available_presets(self.preset_dir)
+
+        # 如果没有找到任何预设，但 preset_xml 存在，添加进去
+        if not presets and self.preset_xml and os.path.isfile(self.preset_xml):
+            stem = os.path.splitext(os.path.basename(self.preset_xml))[0]
+            presets.append((stem, self.preset_xml))
+
+        selected_idx = -1
+        ksnew_idx = -1
+        ks_idx = -1
+
+        target_path = target_preset or self.preset_xml
+        target_stem = os.path.splitext(os.path.basename(target_path))[0].lower() if target_path else ""
+
+        for idx, (name, path) in enumerate(presets):
+            if name.upper() == "KSNEW":
+                display_text = f"⭐ {name} (推荐默认)"
+                ksnew_idx = idx
+            elif name.upper() == "KS":
+                display_text = f"⭐ {name}"
+                ks_idx = idx
+            else:
+                display_text = f"🎛️ {name}"
+
+            self.combo_presets.addItem(display_text, path)
+
+            if target_path and os.path.abspath(path) == os.path.abspath(target_path):
+                selected_idx = idx
+            elif target_stem and name.lower() == target_stem:
+                selected_idx = idx
+
+        # 如果 target_path 是外部路径不在列表中，添加进来
+        if target_path and os.path.isfile(target_path) and selected_idx == -1:
+            ext_name = f"📁 [外部] {os.path.splitext(os.path.basename(target_path))[0]}"
+            self.combo_presets.addItem(ext_name, target_path)
+            selected_idx = self.combo_presets.count() - 1
+
+        # 决定最终选中的项目：优先匹配目标；若无明确目标或未命中，优先选择 KSNEW，其次 KS，再次第 0 项
+        if selected_idx != -1:
+            final_idx = selected_idx
+        elif ksnew_idx != -1:
+            final_idx = ksnew_idx
+        elif ks_idx != -1:
+            final_idx = ks_idx
+        elif self.combo_presets.count() > 0:
+            final_idx = 0
+        else:
+            final_idx = -1
+
+        if final_idx != -1:
+            self.combo_presets.setCurrentIndex(final_idx)
+            self.preset_xml = self.combo_presets.itemData(final_idx)
+
+        self.combo_presets.blockSignals(False)
         self._refresh_status()
 
-    def _refresh_status(self):
-        info = parse_ozone_preset_info(self.preset_xml)
-        if not info["valid"]:
-            self.lbl_status.setText(f"⚠️ 预设文件错误: {info['error']}")
-            self.lbl_status.setStyleSheet("font-size: 12px; color: #ef4444; font-weight: bold;")
-            self.lbl_preset_path.setText(self.preset_xml)
+    def _on_preset_combo_changed(self, idx: int):
+        if idx < 0:
             return
-
-        preset_name = os.path.basename(self.preset_xml)
-        self.lbl_title.setText(f"iZotope Ozone 12 工业母带增强链 ({preset_name})")
-        self.lbl_status.setText(
-            f"● 预设就绪: {preset_name} | {len(info['modules'])} 个原生工业母带模块已激活 (64-bit 离线高速渲染，无需参考歌)"
-        )
-        self.lbl_status.setStyleSheet("font-size: 12px; color: #38bdf8; font-weight: 500;")
-        self.lbl_preset_path.setText(f"预设路径: {self.preset_xml}")
-
-    def _on_choose_xml_clicked(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "选择 Ozone 预设文件 (XML)", os.path.dirname(self.preset_xml), "Ozone 预设 (*.xml);;所有文件 (*.*)"
-        )
-        if path:
+        path = self.combo_presets.itemData(idx)
+        if path and path != self.preset_xml:
             self.preset_xml = path
             self._refresh_status()
             self.preset_updated.emit()
+
+    def _on_refresh_clicked(self):
+        self._load_presets_from_dir(self.preset_xml)
+        self.preset_updated.emit()
+
+    def _on_choose_xml_clicked(self):
+        init_dir = os.path.dirname(self.preset_xml) if self.preset_xml else self.preset_dir
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 Ozone 预设文件 (XML)", init_dir, "Ozone 预设 (*.xml);;所有文件 (*.*)"
+        )
+        if path:
+            self.preset_xml = path
+            self._load_presets_from_dir(path)
+            self.preset_updated.emit()
+
+    def _on_open_dir_clicked(self):
+        if os.path.exists(self.preset_dir):
+            try:
+                os.startfile(self.preset_dir)
+            except Exception as e:
+                QMessageBox.warning(self, "打开目录失败", f"无法打开预设目录:\n{e}")
+        else:
+            QMessageBox.warning(self, "目录不存在", f"未找到预设目录:\n{self.preset_dir}")
 
     def _on_open_settings_clicked(self):
         dlg = OzoneSettingsDialog(self, self.preset_xml, self.vst_dir)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.saved:
             self.preset_xml = dlg.preset_xml
             self.vst_dir = dlg.vst_dir
-            self._refresh_status()
+            self._load_presets_from_dir(self.preset_xml)
             self.preset_updated.emit()
+
+    def _refresh_status(self):
+        if not self.preset_xml or not os.path.exists(self.preset_xml):
+            self.lbl_status.setText("⚠️ 未选择预设文件或预设文件不存在")
+            self.lbl_status.setStyleSheet("font-size: 11px; color: #ef4444; font-weight: bold;")
+            self.lbl_preset_path.setText(f"预设路径: {self.preset_xml or '未指定'}")
+            return
+
+        info = parse_ozone_preset_info(self.preset_xml)
+        preset_name = os.path.basename(self.preset_xml)
+
+        if not info["valid"]:
+            self.lbl_status.setText(f"⚠️ 预设文件错误: {info['error']}")
+            self.lbl_status.setStyleSheet("font-size: 11px; color: #ef4444; font-weight: bold;")
+            self.lbl_preset_path.setText(f"预设路径: {self.preset_xml}")
+            return
+
+        mod_names = [m["name"] for m in info["modules"]]
+        self.lbl_status.setText(
+            f"● 预设就绪: {preset_name} | {len(mod_names)} 个原生母带模块已配置 ({', '.join(mod_names)})"
+        )
+        self.lbl_status.setStyleSheet("font-size: 11px; color: #38bdf8; font-weight: 500;")
+        self.lbl_preset_path.setText(f"预设路径: {self.preset_xml}")
 
 
 # ==============================================================================
@@ -2085,15 +2346,16 @@ class MainWindow(QMainWindow):
         # 1. 顶部：三选项卡 (Matchering 参考母带 vs Ozone 12 预设增强 vs 原曲直通)
         # ----------------------------------------------------
         self.tab_widget = QTabWidget()
-        self.tab_widget.setFixedHeight(150)
+        self.tab_widget.setFixedHeight(158)
 
         # 选项卡 1：Matchering
         self.ref_card = DropReferenceWidget(self)
         self.tab_widget.addTab(self.ref_card, "🎚️ 选项卡 1: Matchering 目标参考母带 (需提供参考歌曲)")
 
-        # 选项卡 2：Ozone 12 KS 预设增强
+        # 选项卡 2：Ozone 12 预设增强
         self.ozone_card = OzoneTabWidget(self)
-        self.tab_widget.addTab(self.ozone_card, "⚡ 选项卡 2: iZotope Ozone 12 (KS 预设) 音质提升增强 (免参考歌)")
+        self.ozone_card.preset_updated.connect(self._on_ozone_preset_updated)
+        self.tab_widget.addTab(self.ozone_card, "⚡ 选项卡 2: iZotope Ozone 12 音质提升增强 (免参考歌)")
 
         # 选项卡 3：原曲直通
         self.passthrough_card = PassthroughTabWidget(self)
@@ -2594,14 +2856,31 @@ class MainWindow(QMainWindow):
         self.txt_genre.setText(meta.get("genre", ""))
 
         # Ozone 预设与 VST 目录恢复
-        if "ozone_preset_path" in cfg and os.path.exists(cfg["ozone_preset_path"]):
-            self.ozone_card.preset_xml = cfg["ozone_preset_path"]
+        if "ozone_preset_dir" in cfg and os.path.isdir(cfg["ozone_preset_dir"]):
+            self.ozone_card.preset_dir = cfg["ozone_preset_dir"]
+
+        target_preset = cfg.get("ozone_preset_path", "")
+        # 如果未指定，或者之前是默认的 KS.xml 且目录下存在 KSNEW.xml，则默认选择 KSNEW.xml
+        default_preset = get_default_ozone_preset_path(self.ozone_card.preset_dir)
+        if not target_preset or not os.path.exists(target_preset) or os.path.basename(target_preset).lower() == "ks.xml":
+            target_preset = default_preset
+
+        self.ozone_card.preset_xml = target_preset
+
         if "ozone_vst_dir" in cfg and os.path.exists(cfg["ozone_vst_dir"]):
             self.ozone_card.vst_dir = cfg["ozone_vst_dir"]
-        self.ozone_card._refresh_status()
+        self.ozone_card._load_presets_from_dir(self.ozone_card.preset_xml)
+        self._on_ozone_preset_updated()
 
         # 触发当前选项卡 UI 联动
         self._on_tab_changed(self.tab_widget.currentIndex())
+
+    def _on_ozone_preset_updated(self):
+        preset_stem = os.path.splitext(os.path.basename(self.ozone_card.preset_xml))[0] if self.ozone_card.preset_xml else "KSNEW"
+        self.tab_widget.setTabText(1, f"⚡ 选项卡 2: iZotope Ozone 12 ({preset_stem}) 音质提升增强 (免参考歌)")
+        if self.tab_widget.currentIndex() == 1:
+            self.btn_start.setText(f"⚡ 开始 Ozone 12 ({preset_stem}) 预设批量增强")
+            self.lbl_progress_status.setText(f"就绪 (当前: Ozone 12 预设增强模式 - {preset_stem})")
 
     def _set_loudness_group_enabled(self, enabled: bool):
         self.loudness_group.setEnabled(enabled)
@@ -2644,7 +2923,8 @@ class MainWindow(QMainWindow):
                 """)
                 self.lbl_progress_status.setText("就绪 (当前: Matchering 参考母带模式)")
             else:
-                self.btn_start.setText("⚡ 开始 Ozone 12 (KS) 预设批量增强")
+                preset_stem = os.path.splitext(os.path.basename(self.ozone_card.preset_xml))[0] if self.ozone_card.preset_xml else "KSNEW"
+                self.btn_start.setText(f"⚡ 开始 Ozone 12 ({preset_stem}) 预设批量增强")
                 self.btn_start.setStyleSheet("""
                     QPushButton {
                         background-color: #0284c7;
@@ -2657,7 +2937,7 @@ class MainWindow(QMainWindow):
                     QPushButton:hover { background-color: #0369a1; }
                     QPushButton:disabled { background-color: #374151; color: #6b7280; }
                 """)
-                self.lbl_progress_status.setText("就绪 (当前: Ozone 12 预设增强模式)")
+                self.lbl_progress_status.setText(f"就绪 (当前: Ozone 12 预设增强模式 - {preset_stem})")
         else:
             # 选项卡 3: 原曲直通 (仅转换格式 / 不做任何修改)
             self._set_loudness_group_enabled(False)
@@ -2724,6 +3004,7 @@ class MainWindow(QMainWindow):
             self.cfg["filename_suffix"] = self.txt_suffix.text().strip()
         self.cfg["use_limiter"] = self.chk_limiter.isChecked()
         self.cfg["embed_cover"] = self.chk_embed_cover.isChecked()
+        self.cfg["ozone_preset_dir"] = self.ozone_card.preset_dir
         self.cfg["ozone_preset_path"] = self.ozone_card.preset_xml
         self.cfg["ozone_vst_dir"] = self.ozone_card.vst_dir
         self.cfg["metadata"] = {
@@ -2966,15 +3247,16 @@ class MainWindow(QMainWindow):
         ozone_modules = None
         ozone_summaries = None
         if engine_mode == "ozone12":
-            self.lbl_progress_status.setText("正在主线程预装配 Ozone 12 原生母带流水线...")
+            preset_stem = os.path.splitext(os.path.basename(self.ozone_card.preset_xml))[0] if self.ozone_card.preset_xml else "KSNEW"
+            self.lbl_progress_status.setText(f"正在主线程预装配 Ozone 12 ({preset_stem}) 原生母带流水线...")
             self._append_log("INFO", f"正在主线程预装配 Ozone 12 预设母带链: {self.ozone_card.preset_xml} ...")
             try:
                 ozone_modules, ozone_summaries = create_ozone_chain_from_xml(
                     self.ozone_card.preset_xml, self.ozone_card.vst_dir
                 )
-                self._append_log("SUCCESS", f"✅ 主线程装配完成: 共 {len(ozone_modules)} 个原生母带模块已就绪")
+                self._append_log("SUCCESS", f"✅ 主线程装配完成 [{preset_stem}]: 共 {len(ozone_modules)} 个原生母带模块已就绪")
             except Exception as e:
-                QMessageBox.critical(self, "Ozone 加载失败", f"无法在主线程装配 Ozone 12 预设母带链:\n{e}")
+                QMessageBox.critical(self, "Ozone 加载失败", f"无法在主线程装配 Ozone 12 ({preset_stem}) 预设母带链:\n{e}")
                 self._append_log("ERROR", f"❌ 主线程装配 Ozone 12 预设母带链失败: {e}")
                 return
 
@@ -2991,7 +3273,8 @@ class MainWindow(QMainWindow):
         if engine_mode == "matchering":
             mode_text = "Matchering 参考母带"
         elif engine_mode == "ozone12":
-            mode_text = "Ozone 12 (KS) 预设增强"
+            preset_stem = os.path.splitext(os.path.basename(self.ozone_card.preset_xml))[0] if self.ozone_card.preset_xml else "KSNEW"
+            mode_text = f"Ozone 12 ({preset_stem}) 预设增强"
         else:
             mode_text = "原曲纯净格式转换 (直通)"
         self.lbl_progress_status.setText(f"准备开始【{mode_text}】处理共 {len(tasks)} 首歌曲...")
